@@ -184,3 +184,28 @@ def test_device_name_returns_cast_name():
     mock_cast.name = "Living Room"
     manager._cast = mock_cast
     assert manager.device_name == "Living Room"
+
+
+def test_discover_supports_cast_info_without_host_attribute():
+    manager = CastManager()
+
+    cast_info = MagicMock()
+    cast_info.friendly_name = "Living Room TV"
+    cast_info.host = "192.168.1.42"
+    cast_info.port = 8009
+    cast_info.model_name = "Chromecast Ultra"
+    cast_info.cast_type = "cast"
+
+    cc = MagicMock(spec=["cast_info"])
+    cc.cast_info = cast_info
+
+    with patch("src.chromecast_tui.cast_manager.pychromecast.get_chromecasts", return_value=([cc], object())):
+        with patch("src.chromecast_tui.cast_manager.pychromecast.stop_discovery"):
+            devices = manager.discover(timeout=1.0)
+
+    assert len(devices) == 1
+    assert devices[0].name == "Living Room TV"
+    assert devices[0].host == "192.168.1.42"
+    assert devices[0].port == 8009
+    assert devices[0].model_name == "Chromecast Ultra"
+    assert devices[0].cast_type == "cast"

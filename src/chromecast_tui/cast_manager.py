@@ -65,12 +65,38 @@ class CastManager:
         pychromecast.stop_discovery(browser)
         devices = []
         for cc in chromecasts:
+            cast_info = getattr(cc, "cast_info", None)
+            name = (
+                getattr(cc, "name", None)
+                or getattr(cast_info, "friendly_name", None)
+                or "Unknown Chromecast"
+            )
+            host = (
+                getattr(cc, "host", None)
+                or getattr(cast_info, "host", None)
+                or ""
+            )
+            port = (
+                getattr(cc, "port", None)
+                or getattr(cast_info, "port", None)
+                or 8009
+            )
+            model_name = (
+                getattr(cc, "model_name", None)
+                or getattr(cast_info, "model_name", None)
+                or "Chromecast"
+            )
+            cast_type = (
+                getattr(cc, "cast_type", None)
+                or getattr(cast_info, "cast_type", None)
+                or "cast"
+            )
             devices.append(DeviceInfo(
-                name=cc.name,
-                host=cc.host,
-                port=cc.port,
-                model_name=cc.model_name or "Chromecast",
-                cast_type=cc.cast_type,
+                name=name,
+                host=host,
+                port=port,
+                model_name=model_name,
+                cast_type=cast_type,
             ))
         return devices
 
