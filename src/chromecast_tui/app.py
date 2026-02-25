@@ -18,12 +18,15 @@ from __future__ import annotations
 
 import threading
 from pathlib import Path
+import mimetypes
 
+import qrcode
 from textual import events, on, work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Container, Horizontal, Vertical
 from textual.reactive import reactive
+from textual.screen import ModalScreen
 from textual.widgets import (
     Button,
     DataTable,
@@ -84,8 +87,59 @@ class VolumeBar(Horizontal):
     """
 
     def compose(self) -> ComposeResult:
-        yield Label("🔊")
+        yield Label("VOL")
         yield Input(value="80", id="vol-input", placeholder="0-100")
+
+
+class MobileConnectScreen(ModalScreen[None]):
+    CSS = """
+    MobileConnectScreen {
+        align: center middle;
+    }
+    #mobile-connect {
+        width: 72;
+        height: auto;
+        max-height: 90%;
+        border: round $accent;
+        background: $surface;
+        padding: 1 2;
+    }
+    #mobile-title {
+        content-align: center middle;
+        width: 100%;
+        margin-bottom: 1;
+    }
+    #mobile-url {
+        margin-bottom: 1;
+        color: $text-muted;
+    }
+    #mobile-qr {
+        width: 100%;
+        content-align: center middle;
+        height: auto;
+        margin-bottom: 1;
+    }
+    #mobile-close {
+        width: 100%;
+    }
+    """
+
+    BINDINGS = [Binding("escape", "dismiss", "Close")]
+
+    def __init__(self, remote_url: str):
+        super().__init__()
+        self._remote_url = remote_url
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="mobile-connect"):
+            yield Label("Connect Mobile", id="mobile-title")
+            yield Label(f"Open in iPhone: {self._remote_url}", id="mobile-url")
+            yield Static(_ascii_qr(self._remote_url), id="mobile-qr")
+            yield Button("Close", id="mobile-close", variant="primary")
+
+    @on(Button.Pressed, "#mobile-close")
+    def on_close_pressed(self) -> None:
+        self.dismiss()
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -109,19 +163,19 @@ class ChromecastApp(App):
 
     #left-panel {
         width: 35;
-        border: solid $accent;
+        border: solid $panel-lighten-1;
         padding: 0 1;
     }
 
     #right-panel {
         width: 1fr;
-        border: solid $accent;
+        border: solid $panel-lighten-1;
         padding: 0 1;
     }
 
     #left-panel Label, #right-panel Label {
-        background: $accent;
-        color: $background;
+        background: $panel;
+        color: $text;
         width: 100%;
         text-align: center;
         margin-bottom: 1;
@@ -151,9 +205,6 @@ class ChromecastApp(App):
         min-width: 5;
     }
 
-    #btn-play  { background: $success; }
-    #btn-stop  { background: $error; }
-
     VolumeBar {
         margin-left: 2;
     }
@@ -166,8 +217,8 @@ class ChromecastApp(App):
     /* Status footer label */
     #status-label {
         height: 1;
-        background: $warning;
-        color: $background;
+        background: $panel-darken-1;
+        color: $text;
         padding: 0 1;
         display: none;
     }
@@ -185,6 +236,14 @@ class ChromecastApp(App):
         margin-top: 1;
         width: 100%;
     }
+    #btn-mobile {
+        margin-top: 1;
+        width: 100%;
+    }
+    #filter-query {
+        margin-bottom: 1;
+        width: 100%;
+    }
 
     /* Directory tree */
     DirectoryTree {
@@ -197,6 +256,7 @@ class ChromecastApp(App):
         Binding("s", "stop", "Stop"),
         Binding("q", "quit", "Quit"),
         Binding("r", "scan", "Scan"),
+        Binding("c", "open_mobile", "Connect Mobile"),
         Binding("m", "toggle_mute", "Mute"),
         Binding("left", "seek_back", "« 10s"),
         Binding("right", "seek_fwd", "10s »"),
@@ -212,10 +272,12 @@ class ChromecastApp(App):
 
     def __init__(self):
         super().__init__()
-        self._server = MediaServer()
+        self._server = MediaServer(on_remote_cast=self._on_remote_cast)
         self._cast = CastManager(on_state_change=self._on_cast_state)
         self._devices: list[DeviceInfo] = []
+        self._visible_devices: list[DeviceInfo] = []
         self._selected_device: DeviceInfo | None = None
+        self._filter_query: str = ""
         self._control_lock = threading.Lock()
         self._server.start()
 
@@ -230,8 +292,10 @@ class ChromecastApp(App):
             # Left: device list
             with Vertical(id="left-panel"):
                 yield Label("[ Devices ]")
+                yield Input(placeholder="Filter devices: all/cast/roku/airplay", id="filter-query")
                 yield DataTable(id="device-table", cursor_type="row", zebra_stripes=True)
-                yield Button("⟳ Scan", id="btn-scan", variant="primary")
+                yield Button("Scan", id="btn-scan", variant="default")
+                yield Button("Connect Mobile", id="btn-mobile", variant="default")
 
             # Right: file browser
             with Vertical(id="right-panel"):
@@ -239,20 +303,20 @@ class ChromecastApp(App):
                 yield DirectoryTree(str(Path.home()), id="file-tree")
 
         yield NowPlayingBar(id="now-playing", markup=False)
-        yield ProgressBar(total=100, id="seek-bar", show_eta=False)
+        yield ProgressBar(total=100, id="seek-bar", show_eta=False, show_percentage=False)
         yield Label("", id="seek-preview-label")
 
         # Controls
         with Horizontal(id="controls"):
             yield Button("«", id="btn-rew",  variant="default")
-            yield Button("▶", id="btn-play", variant="success")
-            yield Button("■", id="btn-stop", variant="error")
+            yield Button("▶", id="btn-play", variant="default")
+            yield Button("■", id="btn-stop", variant="default")
             yield Button("»", id="btn-ffw",  variant="default")
             yield Button("+30s", id="btn-ffw-30", variant="default")
             yield Button("+100s", id="btn-ffw-100", variant="default")
             yield VolumeBar()
             yield Input(placeholder="Seek: +30, -10, 1:23", id="seek-input")
-            yield Button("Go", id="btn-seek-go", variant="primary")
+            yield Button("Go", id="btn-seek-go", variant="default")
             yield Input(placeholder="Cast URL directly…", id="url-input")
 
         yield Label(id="status-label")
@@ -261,9 +325,10 @@ class ChromecastApp(App):
     def on_mount(self) -> None:
         # Set up device table columns
         table = self.query_one("#device-table", DataTable)
-        table.add_columns("Name", "Model", "Host")
+        table.add_columns("Name", "Model", "Type", "Host")
         # Auto-scan on start
         self.action_scan()
+        self._set_status("Press 'c' for Connect Mobile", clear_after=5)
 
     # ------------------------------------------------------------------
     # Device scanning
@@ -282,10 +347,25 @@ class ChromecastApp(App):
 
     def _populate_devices(self, devices: list[DeviceInfo]) -> None:
         self._devices = devices
+        self._refresh_visible_devices()
+
+    def _refresh_visible_devices(self) -> None:
+        query = self._filter_query.strip().lower()
+        if not query or query == "all":
+            filtered = self._devices
+        else:
+            filtered = [
+                d for d in self._devices
+                if query in d.backend.lower()
+                or query in d.name.lower()
+                or query in d.model_name.lower()
+                or query in d.host.lower()
+            ]
+        self._visible_devices = filtered
         table = self.query_one("#device-table", DataTable)
         table.clear()
-        for d in devices:
-            table.add_row(d.name, d.model_name, d.host)
+        for d in filtered:
+            table.add_row(d.name, d.model_name, d.backend, d.host)
 
     # ------------------------------------------------------------------
     # Device selection → connect
@@ -294,9 +374,14 @@ class ChromecastApp(App):
     @on(DataTable.RowSelected, "#device-table")
     def on_device_selected(self, event: DataTable.RowSelected) -> None:
         idx = event.cursor_row
-        if idx < len(self._devices):
-            self._selected_device = self._devices[idx]
+        if idx < len(self._visible_devices):
+            self._selected_device = self._visible_devices[idx]
             self._connect_to(self._selected_device)
+
+    @on(Input.Changed, "#filter-query")
+    def on_filter_query_changed(self, event: Input.Changed) -> None:
+        self._filter_query = event.value
+        self._refresh_visible_devices()
 
     @work(thread=True)
     def _connect_to(self, device: DeviceInfo) -> None:
@@ -363,6 +448,20 @@ class ChromecastApp(App):
         except Exception as e:
             self._set_status(f"Cast error: {e}", clear_after=5)
 
+    def _on_remote_cast(self, url: str, title: str = "") -> None:
+        if not self._cast.connected:
+            raise RuntimeError("No device connected in TUI")
+        mime, _ = mimetypes.guess_type(url)
+        if not mime:
+            mime = "video/mp4"
+        try:
+            self._cast.cast_url(url, mime, title=title)
+            shown = title or url
+            self._set_status(f"Remote casting: {shown}", clear_after=4)
+        except Exception as e:
+            self._set_status(f"Remote cast error: {e}", clear_after=5)
+            raise
+
     # ------------------------------------------------------------------
     # Volume input
     # ------------------------------------------------------------------
@@ -407,6 +506,10 @@ class ChromecastApp(App):
     @on(Button.Pressed, "#btn-scan")
     def on_btn_scan(self) -> None:
         self.action_scan()
+
+    @on(Button.Pressed, "#btn-mobile")
+    def on_btn_mobile(self) -> None:
+        self.action_open_mobile()
 
     @on(Button.Pressed, "#btn-seek-go")
     def on_btn_seek_go(self) -> None:
@@ -505,6 +608,9 @@ class ChromecastApp(App):
     def action_seek_fwd_100(self) -> None:
         if self._cast.connected:
             self._seek_relative(100)
+
+    def action_open_mobile(self) -> None:
+        self.push_screen(MobileConnectScreen(self._server.remote_url()))
 
     def _seek_relative(self, delta_seconds: float) -> None:
         target = max(0.0, self._cast.state.current_time + delta_seconds)
@@ -623,7 +729,7 @@ class ChromecastApp(App):
     def _show_status(self, msg: str) -> None:
         label = self.query_one("#status-label", Label)
         if msg:
-            label.update(f" ℹ  {msg}")
+            label.update(f" {msg}")
             label.add_class("visible")
         else:
             label.update("")
@@ -698,3 +804,15 @@ def _parse_seek_target(raw: str, current_time: float, duration: float) -> float 
     if duration and duration > 0:
         target = min(target, duration)
     return target
+
+
+def _ascii_qr(text: str) -> str:
+    qr = qrcode.QRCode(border=4)
+    qr.add_data(text)
+    qr.make(fit=True)
+    matrix = qr.get_matrix()
+    lines = []
+    for row in matrix:
+        line = "".join("██" if cell else "  " for cell in row)
+        lines.append(line)
+    return "\n".join(lines)

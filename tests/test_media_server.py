@@ -11,7 +11,7 @@ import tempfile
 
 import pytest
 import pytest_asyncio
-from aiohttp import ClientSession
+from aiohttp import ClientSession, FormData
 from aiohttp.test_utils import TestServer, TestClient
 
 from src.chromecast_tui.media_server import make_app
@@ -161,3 +161,43 @@ async def test_missing_file_returns_404(client):
 async def test_directory_returns_404(client):
     resp = await client.get("/tmp")
     assert resp.status == 404
+
+
+async def test_remote_page_returns_200(client):
+    resp = await client.get("/remote")
+    assert resp.status == 200
+    body = await resp.text()
+    assert "Chromecast TUI Remote" in body
+
+
+async def test_cast_url_calls_callback(aiohttp_client):
+    called = []
+
+    def _cb(url: str, title: str) -> None:
+        called.append((url, title))
+
+    app = make_app(on_remote_cast=_cb)
+    client = await aiohttp_client(app)
+    resp = await client.post("/api/cast-url", json={"url": "https://example.com/test.mp4", "title": "X"})
+    assert resp.status == 200
+    data = await resp.json()
+    assert data["ok"] is True
+    assert called == [("https://example.com/test.mp4", "X")]
+
+
+async def test_upload_cast_saves_file_and_calls_callback(aiohttp_client, tmp_path):
+    called = []
+
+    def _cb(url: str, title: str) -> None:
+        called.append((url, title))
+
+    app = make_app(on_remote_cast=_cb, upload_dir=tmp_path)
+    client = await aiohttp_client(app)
+    form = FormData()
+    form.add_field("file", b"hello world", filename="clip.mp4", content_type="video/mp4")
+    resp = await client.post("/api/upload-cast", data=form)
+    assert resp.status == 200
+    data = await resp.json()
+    assert data["ok"] is True
+    assert data["name"] == "clip.mp4"
+    assert called and called[0][1] == "clip.mp4"

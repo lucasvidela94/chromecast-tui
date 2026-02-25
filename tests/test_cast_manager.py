@@ -12,6 +12,8 @@ from src.chromecast_tui.cast_manager import (
     CastManager,
     PlaybackState,
     SUPPORTED_EXTENSIONS,
+    _host_from_url,
+    _parse_ssdp_headers,
 )
 
 
@@ -201,7 +203,8 @@ def test_discover_supports_cast_info_without_host_attribute():
 
     with patch("src.chromecast_tui.cast_manager.pychromecast.get_chromecasts", return_value=([cc], object())):
         with patch("src.chromecast_tui.cast_manager.pychromecast.stop_discovery"):
-            devices = manager.discover(timeout=1.0)
+            with patch.object(manager, "_discover_roku", return_value=[]):
+                devices = manager.discover(timeout=1.0)
 
     assert len(devices) == 1
     assert devices[0].name == "Living Room TV"
@@ -209,3 +212,21 @@ def test_discover_supports_cast_info_without_host_attribute():
     assert devices[0].port == 8009
     assert devices[0].model_name == "Chromecast Ultra"
     assert devices[0].cast_type == "cast"
+    assert devices[0].backend == "chromecast"
+
+
+def test_parse_ssdp_headers_lowercases_keys():
+    payload = (
+        "HTTP/1.1 200 OK\r\n"
+        "LOCATION: http://192.168.1.77:8060/\r\n"
+        "USN: roku:ecp:abcdef\r\n\r\n"
+    )
+    headers = _parse_ssdp_headers(payload)
+    assert headers["location"] == "http://192.168.1.77:8060/"
+    assert headers["usn"] == "roku:ecp:abcdef"
+
+
+def test_host_from_url_extracts_host():
+    assert _host_from_url("http://192.168.1.77:8060/desc.xml") == "192.168.1.77"
+    assert _host_from_url("https://roku.local/path") == "roku.local"
+    assert _host_from_url("not-a-url") == ""
