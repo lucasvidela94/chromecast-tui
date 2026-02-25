@@ -1,0 +1,17 @@
+[project]
+name = "chromecast-tui"
+version = "0.1.0"
+description = "Terminal UI for casting media to Chromecast devices on the local network"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "aiohttp>=3.13.3",
+    "pychromecast>=14.0.9",
+    "textual>=8.0.0",
+]
+
+[project.scripts]
+chromecast-tui = "chromecast_tui.__main__:main"
+
+[tool.uv]
+package = true
